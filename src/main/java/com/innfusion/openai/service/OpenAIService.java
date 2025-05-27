@@ -4,6 +4,6 @@ import java.util.List;
 
 public interface OpenAIService {
 
-    public List<byte[]>generateTextToAudio(List<String> questions);
+    public List<String>generateTextToAudio(List<String> questions);
 
 }

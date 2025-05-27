@@ -4,6 +4,7 @@ import com.innfusion.openai.exception.OpenAiAuthenticationException;
 import com.innfusion.openai.exception.OpenAiQuotaException;
 import com.innfusion.openai.service.OpenAIService;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -27,7 +28,7 @@ public class OpenAIServiceImpl implements OpenAIService {
     private final OpenAiAudioSpeechModel openAiAudioSpeechModel;
 
     @Override
-    public List<byte[]> generateTextToAudio(List<String> questions) {
+    public List<String> generateTextToAudio(List<String> questions) {
         if (log.isDebugEnabled()) {
             log.debug("Executing generateTextToAudio(List<String> questions) -> ");
         }
@@ -51,8 +52,8 @@ public class OpenAIServiceImpl implements OpenAIService {
                         log.warn("OpenAI Quota Exceeded (caught as NonTransientAiException): {}",
                                         aiException.getMessage());
                         throw new OpenAiQuotaException(aiException.getMessage());
-                    } else if (aiException.getMessage() != null && aiException.getMessage().toUpperCase()
-                                    .contains("HTTP 401")) {
+                    } else if (aiException.getMessage() != null && aiException.getMessage()
+                                    .toUpperCase().contains("HTTP 401")) {
                         log.error("OpenAI Authentication Error: {}", aiException.getMessage());
                         throw new OpenAiAuthenticationException(aiException.getMessage());
                     }
@@ -65,7 +66,8 @@ public class OpenAIServiceImpl implements OpenAIService {
 
             }
             log.info("Successfully generated audio for all questions : {}", questions.size());
-            return audioBytes;
+            return audioBytes.stream().map(bytes -> Base64.getEncoder().encodeToString(bytes))
+                            .toList();
         } catch (Exception e) {
             log.error("Exception in generateTextToAudio(List<String> questions) -> {}",
                             e.getMessage());
