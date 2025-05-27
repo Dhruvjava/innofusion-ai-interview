@@ -27,30 +27,37 @@ import org.springframework.web.multipart.MultipartFile;
 @RequiredArgsConstructor
 public class VideoStreamServiceImpl implements VideoStreamService {
 
-    @Value("${innfusion.video.base-dir}")
+    @Value("${innfusion.video.stream.base-dir}")
     private String baseDir;
 
-    @Value("${innfusion.video.tmp-vide-filename}")
+    @Value("${innfusion.video.stream.tmp-vide-filename}")
     private String tmpVidFilename;
 
-    @Value("${innfusion.video.question-filename}")
+    @Value("${innfusion.video.stream.question-filename}")
     private String queFilename;
 
-    @Value("${innfusion.video.hls-format-dir}")
+    @Value("${innfusion.video.stream.hls-format-dir}")
     private String hlsDir;
 
-    @Value("${innfusion.video.hls-playlist-filename}")
+    @Value("${innfusion.video.stream.hls-playlist-filename}")
     private String hlsPlayFilename;
 
-    @Value("${innfusion.video.hls-segment-pattern}")
+    @Value("${innfusion.video.stream.hls-segment-pattern}")
     private String hlsSegPattern;
 
-    private final String ffmpegExecutable;
+    private String ffmpegExecutable;
 
     private final Messages messages;
 
-    {
-        ffmpegExecutable = Loader.load(org.bytedeco.ffmpeg.global.avutil.class, "ffmpeg");
+//    public VideoStreamServiceImpl(Messages messages) {
+//        this.messages = messages;
+//        ffmpegExecutable = Loader.load(org.bytedeco.ffmpeg.global.avutil.class, "ffmpeg");
+//    }
+
+    private void loadFfmpeg() {
+        if (this.ffmpegExecutable == null) {
+            this.ffmpegExecutable = Loader.load(org.bytedeco.ffmpeg.ffmpeg.class);;
+        }
     }
 
     /**
@@ -107,8 +114,11 @@ public class VideoStreamServiceImpl implements VideoStreamService {
 
             Files.createDirectories(hldOutputDir);
 
+            loadFfmpeg();
+
+            Path ffmpegDir = Paths.get(ffmpegExecutable).getParent(); // ✅ get directory only
             // Execute FFmpeg Commant to Convert mp4 to hls
-            FFmpeg.atPath(Paths.get(ffmpegExecutable)).addInput(UrlInput.fromPath(tempVideoPath))
+            FFmpeg.atPath(ffmpegDir).addInput(UrlInput.fromPath(tempVideoPath))
                             .addOutput(UrlOutput.toPath(hldOutputDir.resolve(hlsPlayFilename))
                                             .addArguments("-start_number", "0")
                                             .addArguments("-hls_time", "10")
