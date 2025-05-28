@@ -20,7 +20,7 @@ public class OpenAITtsRest {
     private final OpenAIService openAIService;
 
     @PostMapping("/generate")
-    public ResponseEntity<List<byte[]>> generateTextToSpeech(@RequestBody OpenAITtsRq openAITtsRq) {
+    public ResponseEntity<List<String>> generateTextToSpeech(@RequestBody OpenAITtsRq openAITtsRq) {
         if (log.isDebugEnabled()) {
             log.debug("Executing RestFull Services : [ POST: /api/v1/tts/generate ] -> ");
         }
