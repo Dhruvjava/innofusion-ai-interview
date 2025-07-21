@@ -1,0 +1,110 @@
+spring:
+  application:
+    name: innfusion-ai-interview
+  
+  # Spring AI Configuration for OpenAI
+  ai:
+    openai:
+      api-key: ${OPENAI_API_KEY:}
+      base-url: ${OPENAI_BASE_URL:https://api.openai.com}
+      chat:
+        options:
+          model: gpt-4o-mini
+          temperature: 0.7
+      audio:
+        speech:
+          options:
+            model: tts-1
+            voice: alloy
+
+  # Spring Cloud AWS Configuration
+  cloud:
+    aws:
+      credentials:
+        access-key: ${AWS_ACCESS_KEY_ID:}
+        secret-key: ${AWS_SECRET_ACCESS_KEY:}
+      region:
+        static: ${AWS_REGION:us-east-1}
+      s3:
+        region: ${AWS_REGION:us-east-1}
+
+  # File Upload Configuration
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+      enabled: true
+
+# Custom Application Configuration
+innfusion:
+  # Video Processing Configuration
+  video:
+    stream:
+      base-dir: ${INNFUSION_VIDEO_BASE_DIR:/tmp/innfusion-videos}
+      tmp-vide-filename: temp-video.mp4
+      question-filename: question.txt
+      hls-format-dir: hls
+      hls-playlist-filename: playlist.m3u8
+      hls-segment-pattern: segment%03d.ts
+    
+    # FFmpeg Configuration for Performance
+    ffmpeg:
+      preset: ${FFMPEG_PRESET:ultrafast}
+      crf: ${FFMPEG_CRF:28}
+      segment-time: ${FFMPEG_SEGMENT_TIME:6}
+      hardware-acceleration: ${FFMPEG_HARDWARE_ACCELERATION:true}
+
+# AWS S3 Configuration
+aws:
+  s3:
+    bucket-name: ${AWS_S3_BUCKET_NAME:innfusion-interview-videos}
+    region: ${AWS_REGION:us-east-1}
+    access-key: ${AWS_ACCESS_KEY_ID:}
+    secret-key: ${AWS_SECRET_ACCESS_KEY:}
+    endpoint-url: ${AWS_S3_ENDPOINT_URL:}
+    max-upload-size: 52428800 # 50MB in bytes
+    upload-timeout-seconds: 30
+
+# Server Configuration
+server:
+  port: ${SERVER_PORT:8080}
+  servlet:
+    context-path: ${SERVER_CONTEXT_PATH:/}
+
+# Logging Configuration
+logging:
+  level:
+    com.innfusion: ${LOG_LEVEL:INFO}
+    com.innfusion.aws: DEBUG
+    com.innfusion.openai: DEBUG
+    com.innfusion.video: DEBUG
+    software.amazon.awssdk: WARN
+    org.springframework.ai: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
+# Actuator Configuration
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+  health:
+    s3:
+      enabled: true
+  metrics:
+    export:
+      cloudwatch:
+        enabled: ${CLOUDWATCH_METRICS_ENABLED:false}
+
+# Thread Pool Configuration for Video Processing
+innfusion.video.performance:
+  thread-pool:
+    core-size: ${VIDEO_THREAD_POOL_CORE:4}
+    max-size: ${VIDEO_THREAD_POOL_MAX:8}
+    queue-capacity: ${VIDEO_THREAD_POOL_QUEUE:100}
+    keep-alive-seconds: ${VIDEO_THREAD_POOL_KEEPALIVE:60} 
