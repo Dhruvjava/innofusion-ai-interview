@@ -3,11 +3,9 @@ package com.innfusion.openai.service.impl;
 import com.github.kokorin.jaffree.ffmpeg.FFmpeg;
 import com.github.kokorin.jaffree.ffmpeg.UrlInput;
 import com.github.kokorin.jaffree.ffmpeg.UrlOutput;
-import com.innfusion.video.domain.VideoUploadRequest;
-import com.innfusion.video.domain.VideoUploadResult;
+
 import io.awspring.cloud.s3.S3Template;
-import java.time.Duration;
-import java.net.URL;
+
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.DoubleAdder;
@@ -88,9 +86,8 @@ public class VideoStreamServiceImpl implements VideoStreamService {
     private final DoubleAdder totalUploadTime = new DoubleAdder();
     private final DoubleAdder totalDataTransferred = new DoubleAdder();
     
-    // Performance thresholds
+    // Performance threshold for logging
     private static final long PERFORMANCE_TARGET_MS = 1000; // 1 second
-    private static final double MIN_OPTIMAL_SPEED_MBPS = 50.0; // 50 MB/s
 
 //    public VideoStreamServiceImpl(Messages messages) {
 //        this.messages = messages;
@@ -120,6 +117,15 @@ public class VideoStreamServiceImpl implements VideoStreamService {
         if (log.isDebugEnabled()) {
             log.debug("Executing processVideoStream(MultipartFile , String, String,String) ->");
         }
+        
+        // Test S3 connectivity first
+        try {
+            testS3Connectivity();
+        } catch (Exception e) {
+            log.error("❌ S3 connectivity test failed: {}", e.getMessage());
+            return new BaseDataRs("S3 connectivity failed: " + e.getMessage());
+        }
+        
         try {
             if (file == null || file.isEmpty()) {
                 log.error("File is Empty/Null");
@@ -135,29 +141,35 @@ public class VideoStreamServiceImpl implements VideoStreamService {
             if (!StringUtils.hasText(questionId)) {
                 throw new RuntimeException("Question ID is null or blank.");
             }
+            
+            log.info("🎬 Processing video file: {} for intervieweeId: {} questionId: {}", 
+                    file.getOriginalFilename(), intervieweeId, questionId);
+            
             final Path intervieweeDir = Paths.get(baseDir, intervieweeId);
             final Path questionDir = intervieweeDir.resolve(questionId);
             // Create Directory if not exists
             Files.createDirectories(questionDir);
 
             // save Question Text file
-
             Path questionFile = questionDir.resolve(queFilename);
             Files.writeString(questionFile, question, StandardOpenOption.CREATE,
                             StandardOpenOption.TRUNCATE_EXISTING);
+            log.info("📝 Question file saved: {}", questionFile);
 
             // Save Video Temporarily
             Path tempVideoPath = questionDir.resolve(tmpVidFilename);
             try (InputStream is = file.getInputStream()) {
                 Files.copy(is, tempVideoPath, StandardCopyOption.REPLACE_EXISTING);
             }
+            log.info("🎥 Temporary video saved: {}", tempVideoPath);
 
             // Create Output Dir for HLS Segment and Playlist
             Path hldOutputDir = questionDir.resolve(hlsDir);
-
             Files.createDirectories(hldOutputDir);
+            log.info("📁 HLS output directory created: {}", hldOutputDir);
 
             loadFfmpeg();
+            log.info("🔧 FFmpeg loaded: {}", ffmpegExecutable);
 
             Path ffmpegDir = Paths.get(ffmpegExecutable).getParent(); // ✅ get directory only
             
@@ -174,384 +186,50 @@ public class VideoStreamServiceImpl implements VideoStreamService {
                 log.error("FFmpeg HLS conversion failed: {}", ffmpegException.getMessage());
                 throw new RuntimeException("HLS conversion failed: " + ffmpegException.getMessage(), ffmpegException);
             }
-            // Delete Temp file after conversation
+            
+            // Delete Temp file after conversion
             Files.deleteIfExists(tempVideoPath);
+            log.info("🧹 Temporary video file deleted");
 
             String message = messages.getMessage(MessageCodes.MC_UPLOADED_SUCCESSFULLY);
+            log.info("✅ Video processing completed successfully for intervieweeId: {} questionId: {}", 
+                    intervieweeId, questionId);
+            
             return new BaseDataRs(message);
         } catch (IOException ioException) {
             log.error("Exception in processVideoStream(MultipartFile , String, String,String) -> {}",
                             ioException.getLocalizedMessage());
-            throw new RuntimeException(ioException);
+            return new BaseDataRs("IO Error during video processing: " + ioException.getMessage());
         } catch (Exception e) {
             log.error("Exception in processVideoStream(MultipartFile , String, String,String) -> {}",
                             e.getLocalizedMessage());
-            throw e;
+            return new BaseDataRs("Error during video processing: " + e.getMessage());
         }
     }
 
-    /**
-     * High-performance video upload to S3 with HLS conversion.
-     * Converts video to HLS format and uploads HLS files + question text to S3.
-     * Uses same file names as local implementation for consistency.
-     */
-    @Override
-    public CompletableFuture<BaseDataRs> uploadVideoToS3(MultipartFile file, String question, String intervieweeId, String questionId) {
-        if (log.isDebugEnabled()) {
-            log.debug("Executing HLS uploadVideoToS3(MultipartFile, String, String, String) ->");
-        }
-        
-        try {
-            log.info("🚀 Starting HLS conversion and S3 upload - IntervieweeId: {}, QuestionId: {}, FileSize: {}MB", 
-                     intervieweeId, questionId, file.getSize() / (1024.0 * 1024.0));
-            
-            // Create optimized upload request using domain model with question in metadata
-            java.util.Map<String, String> metadata = new java.util.HashMap<>();
-            metadata.put("question", question);
-            
-            VideoUploadRequest request = VideoUploadRequest.builder()
-                .file(file)
-                .intervieweeId(intervieweeId)
-                .questionId(questionId)
-                .metadata(metadata)
-                .requestTime(java.time.Instant.now())
-                .build();
-            
-            // Execute HLS conversion and S3 upload
-            return performHighPerformanceUpload(request)
-                .thenApply(this::convertToBaseDataRs);
-            
-        } catch (Exception e) {
-            log.error("Exception in HLS uploadVideoToS3: {}", e.getMessage());
-            CompletableFuture<BaseDataRs> failedFuture = new CompletableFuture<>();
-            failedFuture.completeExceptionally(e);
-            return failedFuture;
-        }
-    }
 
-    /**
-     * Upload video using Spring Cloud AWS (delegates to main high-performance method).
-     */
-    @Override
-    public CompletableFuture<BaseDataRs> uploadVideoUsingSpringCloudAws(MultipartFile file, String intervieweeId, String questionId) {
-        log.info("Delegating to HLS upload implementation (deprecated method - no question text available)");
-        // This deprecated method doesn't have question parameter, so use empty question
-        return uploadVideoToS3(file, "", intervieweeId, questionId);
-    }
 
-    /**
-     * Complete interview upload to S3 - uploads both video and question text
-     * Creates consistent cloud directory structure matching local storage
-     */
-    @Override
-    public CompletableFuture<BaseDataRs> uploadCompleteInterviewToS3(MultipartFile file, String question, String intervieweeId, String questionId) {
-        if (log.isDebugEnabled()) {
-            log.debug("Executing uploadCompleteInterviewToS3 - IntervieweeId: {}, QuestionId: {}", intervieweeId, questionId);
-        }
-        
-        return CompletableFuture.supplyAsync(() -> {
-            String operationId = "complete-upload-" + java.util.UUID.randomUUID().toString().substring(0, 8);
-            long startTime = System.currentTimeMillis();
-            
-            try {
-                log.info("🚀 Starting complete interview upload to S3: IntervieweeId={}, QuestionId={}, FileSize={}MB", 
-                         intervieweeId, questionId, file.getSize() / (1024.0 * 1024.0));
-                
-                // Create base S3 directory path consistent with local structure
-                String baseS3Key = String.format("%s/%s", intervieweeId.trim(), questionId.trim());
-                
-                // Upload video file with timestamp for uniqueness
-                VideoUploadRequest videoRequest = VideoUploadRequest.builder()
-                    .file(file)
-                    .intervieweeId(intervieweeId)
-                    .questionId(questionId)
-                    .requestTime(java.time.Instant.now())
-                    .build();
-                
-                String videoS3Key = videoRequest.generateS3Key();
-                s3Template.upload(s3BucketName, videoS3Key, file.getInputStream());
-                
-                // Upload question text file (matches local storage structure)
-                String questionS3Key = String.format("%s/question.txt", baseS3Key);
-                java.io.ByteArrayInputStream questionStream = new java.io.ByteArrayInputStream(question.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-                s3Template.upload(s3BucketName, questionS3Key, questionStream);
-                
-                long duration = System.currentTimeMillis() - startTime;
-                
-                log.info("✅ Complete interview upload successful!");
-                log.info("📁 Cloud directory: s3://{}/{}/", s3BucketName, baseS3Key);
-                log.info("🎬 Video uploaded: {}", videoS3Key);
-                log.info("📝 Question uploaded: {}", questionS3Key);
-                log.info("⏱️ Total upload time: {}ms", duration);
-                
-                // Create comprehensive result matching cloud directory structure
-                java.util.Map<String, Object> data = new java.util.HashMap<>();
-                data.put("cloudDirectory", String.format("s3://%s/%s/", s3BucketName, baseS3Key));
-                data.put("baseS3Key", baseS3Key);
-                data.put("videoS3Key", videoS3Key);
-                data.put("questionS3Key", questionS3Key);
-                data.put("bucketName", s3BucketName);
-                data.put("intervieweeId", intervieweeId);
-                data.put("questionId", questionId);
-                data.put("videoFileSize", file.getSize());
-                data.put("questionTextSize", question.getBytes().length);
-                data.put("uploadDurationMs", duration);
-                data.put("uploadSpeedMBps", String.format("%.2f", (file.getSize() / (1024.0 * 1024.0)) / (duration / 1000.0)));
-                data.put("filesUploaded", java.util.Arrays.asList("video", "question"));
-                data.put("directoryStructureConsistent", true);
-                
-                String message = String.format("🎯 Complete interview upload SUCCESS: Video (%dMB) + Question uploaded to cloud directory in %dms", 
-                    file.getSize() / (1024 * 1024), duration);
-                
-                return new BaseDataRs(message, data);
-                
-            } catch (Exception e) {
-                log.error("💥 Complete interview upload failed for operation {}: {}", operationId, e.getMessage());
-                
-                java.util.Map<String, Object> errorData = new java.util.HashMap<>();
-                errorData.put("operationId", operationId);
-                errorData.put("error", e.getMessage());
-                errorData.put("intervieweeId", intervieweeId);
-                errorData.put("questionId", questionId);
-                
-                return new BaseDataRs("Complete interview upload failed: " + e.getMessage(), errorData);
-            }
-        }, videoUploadExecutor);
-    }
+
+
+
     
-    @Override
-    public BaseDataRs getPerformanceStatus() {
-        boolean isOptimal = isPerformanceOptimal();
-        double avgSpeed = getAverageUploadSpeedMBps();
-        
-        java.util.Map<String, Object> data = new java.util.HashMap<>();
-        data.put("performanceOptimal", isOptimal);
-        data.put("averageUploadSpeedMBps", avgSpeed);
-        data.put("performanceTarget", "50MB in <1000ms");
-        data.put("minimumSpeedRequired", MIN_OPTIMAL_SPEED_MBPS);
-        data.put("systemStatus", isOptimal ? "OPTIMAL" : "NEEDS_OPTIMIZATION");
-        data.put("totalUploads", totalUploads.get());
-        data.put("successfulUploads", successfulUploads.get());
-        data.put("successRate", getSuccessRate());
-        
-        String message = isOptimal 
-            ? String.format("🚀 Performance OPTIMAL: %.2f MB/s average, %.2f%% success rate", avgSpeed, getSuccessRate() * 100)
-            : String.format("⚠️ Performance needs optimization: %.2f MB/s average", avgSpeed);
-            
-        return new BaseDataRs(message, data);
-    }
 
-    @Override
-    public CompletableFuture<Boolean> checkVideoExists(String intervieweeId, String questionId, String fileName) {
-        return CompletableFuture.supplyAsync(() -> {
-            try {
-                String s3Key = generateS3Key(intervieweeId, questionId, fileName);
-                return s3Template.objectExists(s3BucketName, s3Key);
-            } catch (Exception e) {
-                log.error("Error checking video existence: intervieweeId={}, questionId={}, fileName={}, error={}", 
-                         intervieweeId, questionId, fileName, e.getMessage());
-                return false;
-            }
-        }, videoUploadExecutor);
-    }
 
-    @Override
-    public CompletableFuture<String> generateVideoUrl(String intervieweeId, String questionId, String fileName, int durationHours) {
-        return CompletableFuture.supplyAsync(() -> {
-            try {
-                String s3Key = generateS3Key(intervieweeId, questionId, fileName);
-                URL signedUrl = s3Template.createSignedGetURL(s3BucketName, s3Key, Duration.ofHours(durationHours));
-                return signedUrl.toString();
-            } catch (Exception e) {
-                log.error("Error generating video URL: intervieweeId={}, questionId={}, fileName={}, error={}", 
-                         intervieweeId, questionId, fileName, e.getMessage());
-                return null;
-            }
-        }, videoUploadExecutor);
-    }
 
-    @Override
-    public CompletableFuture<Boolean> deleteVideo(String intervieweeId, String questionId, String fileName) {
-        return CompletableFuture.supplyAsync(() -> {
-            try {
-                String s3Key = generateS3Key(intervieweeId, questionId, fileName);
-                s3Template.deleteObject(s3BucketName, s3Key);
-                log.info("Video deleted successfully: s3Key={}", s3Key);
-                return true;
-            } catch (Exception e) {
-                log.error("Error deleting video: intervieweeId={}, questionId={}, fileName={}, error={}", 
-                         intervieweeId, questionId, fileName, e.getMessage());
-                return false;
-            }
-        }, videoUploadExecutor);
-    }
+    
 
+    
     /**
-     * High-performance video upload implementation using Template Method Pattern
-     * Enhanced to convert video to HLS format and upload HLS files + question to S3
-     * Uses same file names as local implementation for consistency
+     * Extract file extension from filename
      */
-    private CompletableFuture<VideoUploadResult> performHighPerformanceUpload(VideoUploadRequest request) {
-        String operationId = "upload-" + java.util.UUID.randomUUID().toString().substring(0, 8);
-        
-        return CompletableFuture.supplyAsync(() -> {
-            // Record performance start (Observer Pattern)
-            recordUploadStart(operationId, request.getFile().getSize());
-            long startTime = System.currentTimeMillis();
-            
-            Path tempDir = null;
-            
-            try {
-                // Validation now handled by Bean Validation (@Valid) in REST layer
-                // No manual validation needed here - ValidationUtils handles it
-                
-                // Create base S3 directory structure: intervieweeId/questionId/
-                String baseS3Key = String.format("%s/%s", 
-                    request.getIntervieweeId().trim(), 
-                    request.getQuestionId().trim());
-                
-                log.info("🚀 HLS conversion and S3 upload started: operation={}, size={}MB, baseKey={}", 
-                        operationId, request.getFile().getSize() / (1024.0 * 1024.0), baseS3Key);
-                
-                // Create temporary directory for HLS processing
-                tempDir = Files.createTempDirectory("hls-s3-upload-" + operationId);
-                
-                // Save video file temporarily (same name as local implementation)
-                Path tempVideoPath = tempDir.resolve(tmpVidFilename);
-                try (InputStream is = request.getFile().getInputStream()) {
-                    Files.copy(is, tempVideoPath, StandardCopyOption.REPLACE_EXISTING);
-                }
-                log.debug("📹 Temporary video saved: {}", tempVideoPath);
-                
-                // Create question text file (same name as local implementation)
-                String question = (String) request.getMetadata().get("question");
-                if (question != null) {
-                    Path questionFile = tempDir.resolve(queFilename);
-                    Files.writeString(questionFile, question, StandardOpenOption.CREATE);
-                    log.debug("📝 Question file created: {}", questionFile);
-                }
-                
-                // Create HLS output directory (same structure as local implementation)  
-                Path hlsOutputDir = tempDir.resolve(hlsDir);
-                Files.createDirectories(hlsOutputDir);
-                
-                log.info("🎬 Converting video to HLS format using OPTIMIZED processing...");
-                
-                // Execute OPTIMIZED HLS conversion using centralized high-performance method
-                long ffmpegDuration = executeOptimizedHlsConversion(
-                    tempVideoPath, 
-                    hlsOutputDir.resolve(hlsPlayFilename),
-                    hlsOutputDir,
-                    hlsOutputDir.resolve(hlsSegPattern).toString()
-                );
-                
-                log.info("✅ HLS conversion completed, uploading to S3...");
-                
-                // Upload question text file to S3 (same filename as local implementation)
-                if (question != null) {
-                    String questionS3Key = String.format("%s/%s", baseS3Key, queFilename);
-                    Path questionFile = tempDir.resolve(queFilename);
-                    s3Template.upload(s3BucketName, questionS3Key, Files.newInputStream(questionFile));
-                    log.debug("📝 Question uploaded: {}", questionS3Key);
-                }
-                
-                // Upload HLS playlist file to S3 (same structure as local implementation)
-                String playlistS3Key = String.format("%s/%s/%s", baseS3Key, hlsDir, hlsPlayFilename);
-                Path playlistFile = hlsOutputDir.resolve(hlsPlayFilename);
-                s3Template.upload(s3BucketName, playlistS3Key, Files.newInputStream(playlistFile));
-                log.debug("🎵 HLS playlist uploaded: {}", playlistS3Key);
-                
-                // Upload all HLS segment files to S3 (same pattern as local implementation)
-                int segmentCount = 0;
-                try (DirectoryStream<Path> stream = Files.newDirectoryStream(hlsOutputDir, "*.ts")) {
-                    for (Path segmentFile : stream) {
-                        String segmentS3Key = String.format("%s/%s/%s", baseS3Key, hlsDir, segmentFile.getFileName());
-                        s3Template.upload(s3BucketName, segmentS3Key, Files.newInputStream(segmentFile));
-                        segmentCount++;
-                    }
-                }
-                log.info("📺 HLS segments uploaded: {} segments", segmentCount);
-                
-                // Delete temporary video file
-                Files.deleteIfExists(tempVideoPath);
-                
-                long duration = System.currentTimeMillis() - startTime;
-                
-                // Record performance completion (Observer Pattern)
-                recordUploadCompletion(operationId, true, duration);
-                
-                log.info("✅ HLS upload to S3 completed!");
-                log.info("📁 S3 directory structure: s3://{}/{}/", s3BucketName, baseS3Key);
-                log.info("🎵 HLS playlist: {}", playlistS3Key);
-                log.info("📺 HLS segments: {} files", segmentCount);
-                log.info("⏱️ Total processing time: {}ms", duration);
-                
-                // Factory Pattern: Create result object with HLS structure info
-                VideoUploadResult result = VideoUploadResult.success(request, playlistS3Key, s3BucketName, duration);
-                
-                // Log performance metrics
-                if (result.isWithinPerformanceTarget()) {
-                    log.info("🎯 PERFORMANCE TARGET ACHIEVED: HLS conversion + upload {}MB in {}ms ({:.2f} MB/s) ✨", 
-                           result.getFileSizeBytes() / (1024.0 * 1024.0),
-                           duration, result.getUploadSpeedMBps());
-                } else {
-                    log.warn("⚠️ Performance target missed: {}ms (includes HLS conversion)", duration);
-                }
-                
-                return result;
-                
-            } catch (Exception e) {
-                long duration = System.currentTimeMillis() - startTime;
-                recordUploadCompletion(operationId, false, duration);
-                
-                log.error("💥 HLS conversion and S3 upload failed for operation {}: {}", operationId, e.getMessage());
-                return VideoUploadResult.failure(request, e.getMessage());
-            } finally {
-                // Clean up temporary directory
-                if (tempDir != null) {
-                    try {
-                        deleteDirectoryRecursively(tempDir);
-                        log.debug("🧹 Temporary directory cleaned up: {}", tempDir);
-                    } catch (Exception e) {
-                        log.warn("⚠️ Failed to clean up temporary directory {}: {}", tempDir, e.getMessage());
-                    }
-                }
-            }
-        }, videoUploadExecutor);
-    }
-
-    /**
-     * Converts VideoUploadResult to BaseDataRs for compatibility with existing API.
-     */
-    private BaseDataRs convertToBaseDataRs(VideoUploadResult result) {
-        if (result.isSuccess()) {
-            java.util.Map<String, Object> data = new java.util.HashMap<>();
-            data.put("s3Key", result.getS3Key());
-            data.put("bucketName", result.getBucketName());
-            data.put("fileSize", result.getFileSizeBytes());
-            data.put("contentType", result.getContentType());
-            data.put("intervieweeId", result.getIntervieweeId());
-            data.put("questionId", result.getQuestionId());
-            data.put("uploadDurationMs", result.getUploadDurationMs());
-            data.put("uploadSpeedMBps", String.format("%.2f", result.getUploadSpeedMBps()));
-            data.put("performanceTargetMet", result.isWithinPerformanceTarget());
-            data.put("uploadMethod", "High-Performance Spring Cloud AWS");
-            
-            String message = result.isWithinPerformanceTarget() 
-                ? String.format("🎯 High-performance upload SUCCESS: %dMB in %dms (%.2f MB/s)", 
-                    result.getFileSizeBytes() / (1024 * 1024), 
-                    result.getUploadDurationMs(), 
-                    result.getUploadSpeedMBps())
-                : String.format("Upload completed: %dMB in %dms (%.2f MB/s)", 
-                    result.getFileSizeBytes() / (1024 * 1024), 
-                    result.getUploadDurationMs(), 
-                    result.getUploadSpeedMBps());
-                    
-            return new BaseDataRs(message, data);
-        } else {
-            return new BaseDataRs(result.getErrorMessage());
+    private String getFileExtension(String filename) {
+        if (filename == null || !filename.contains(".")) {
+            return "mp4";  // default
         }
+        return filename.substring(filename.lastIndexOf(".") + 1).toLowerCase();
     }
+
+
 
     // Performance monitoring methods (Observer Pattern implementation)
     private void recordUploadStart(String operationId, long fileSizeBytes) {
@@ -571,34 +249,6 @@ public class VideoStreamServiceImpl implements VideoStreamService {
             totalDataTransferred.add(metrics.fileSizeBytes);
         }
     }
-    
-    private boolean isPerformanceOptimal() {
-        double avgSpeed = getAverageUploadSpeedMBps();
-        double successRate = getSuccessRate();
-        return avgSpeed >= MIN_OPTIMAL_SPEED_MBPS && successRate >= 0.95;
-    }
-    
-    private double getAverageUploadSpeedMBps() {
-        long uploads = successfulUploads.get();
-        if (uploads == 0) return 0.0;
-        
-        double totalMB = totalDataTransferred.sum() / (1024.0 * 1024.0);
-        double totalTimeSeconds = totalUploadTime.sum() / 1000.0;
-        return totalTimeSeconds > 0 ? totalMB / totalTimeSeconds : 0.0;
-    }
-    
-    private double getSuccessRate() {
-        long total = totalUploads.get();
-        return total > 0 ? (double) successfulUploads.get() / total : 0.0;
-    }
-    
-    private String generateS3Key(String intervieweeId, String questionId, String fileName) {
-        String sanitizedFilename = fileName.replaceAll("[^a-zA-Z0-9._-]", "_");
-        return String.format("%s/%s/%s", 
-            intervieweeId.trim(), 
-            questionId.trim(), 
-            sanitizedFilename);
-    }
 
     /**
      * OPTIMIZED HLS conversion using high-performance FFmpeg settings
@@ -612,13 +262,15 @@ public class VideoStreamServiceImpl implements VideoStreamService {
         
         log.info("🚀 Starting OPTIMIZED HLS conversion with preset: {}, CRF: {}, segment time: {}s", 
                  ffmpegPreset, ffmpegCrf, hlsSegmentTime);
+        log.info("📂 Input video: {}", inputVideo);
+        log.info("📂 Output playlist: {}", outputPlaylist);
+        log.info("📂 HLS output dir: {}", hlsOutputDir);
         
         var outputBuilder = UrlOutput.toPath(outputPlaylist)
                 // SPEED OPTIMIZATIONS - Configurable:
                 .addArguments("-preset", ffmpegPreset)              // ultrafast/superfast/veryfast
                 .addArguments("-crf", ffmpegCrf)                    // 18-28 (lower=quality, higher=speed)
                 .addArguments("-threads", "0")                      // Use all CPU cores
-                .addArguments("-tune", "fastdecode")                // Optimize for fast decoding
                 
                 // HLS OPTIMIZATIONS - Configurable:
                 .addArguments("-start_number", "0")
@@ -632,22 +284,76 @@ public class VideoStreamServiceImpl implements VideoStreamService {
                 .addArguments("-movflags", "+faststart")            // Fast start for web
                 .addArguments("-avoid_negative_ts", "disabled");    // Skip timestamp adjustments
         
-        // HARDWARE ACCELERATION (if enabled):
+        // VIDEO ENCODER SELECTION - Use available encoders
         if (enableHardwareAcceleration) {
-            log.debug("🎯 Hardware acceleration ENABLED");
-            outputBuilder.addArguments("-hwaccel", "auto")          // Auto-detect GPU
-                        .addArguments("-c:v", "libx264");           // Fast encoder
+            log.debug("🎯 Hardware acceleration ENABLED - trying videotoolbox for macOS");
+            try {
+                // Use videotoolbox for macOS
+                outputBuilder.addArguments("-c:v", "h264_videotoolbox")
+                           .addArguments("-allow_sw", "1")           // Allow fallback to software
+                           .addArguments("-b:v", "2M");              // Set bitrate for hardware encoding
+                log.debug("✅ Hardware encoding configured: h264_videotoolbox");
+            } catch (Exception e) {
+                log.warn("⚠️ Hardware acceleration failed, falling back to available software encoder: {}", e.getMessage());
+                // Try available software encoders in order of preference
+                outputBuilder.addArguments("-c:v", "libopenh264");  // Available in bundled FFmpeg
+            }
+        } else {
+            log.debug("🎯 Using software encoding with available encoder");
+            // Use available software encoders - libopenh264 is available in the bundled FFmpeg
+            outputBuilder.addArguments("-c:v", "libopenh264")
+                        .addArguments("-profile:v", "baseline")     // Compatible profile
+                        .addArguments("-level", "3.0");            // Compatible level
         }
         
-        FFmpeg.atPath(ffmpegDir).addInput(UrlInput.fromPath(inputVideo))
-                .addOutput(outputBuilder)
-                .execute();
+        // Audio encoding - use available AAC encoder
+        outputBuilder.addArguments("-c:a", "aac")
+                    .addArguments("-b:a", "128k");                  // Audio bitrate
         
-        long duration = System.currentTimeMillis() - startTime;
-        log.info("⚡ OPTIMIZED HLS conversion completed in {}ms (preset: {}, hardware accel: {})", 
-                 duration, ffmpegPreset, enableHardwareAcceleration ? "enabled" : "disabled");
-        
-        return duration;
+        try {
+            log.info("🎬 Executing FFmpeg command...");
+            FFmpeg.atPath(ffmpegDir).addInput(UrlInput.fromPath(inputVideo))
+                    .addOutput(outputBuilder)
+                    .execute();
+            
+            long duration = System.currentTimeMillis() - startTime;
+            log.info("⚡ OPTIMIZED HLS conversion completed in {}ms (preset: {}, hardware accel: {})", 
+                     duration, ffmpegPreset, enableHardwareAcceleration ? "enabled" : "disabled");
+            
+            return duration;
+        } catch (Exception e) {
+            log.error("💥 FFmpeg execution failed: {}", e.getMessage());
+            log.error("🔍 FFmpeg executable path: {}", ffmpegExecutable);
+            log.error("🔍 FFmpeg directory: {}", ffmpegDir);
+            log.error("🔍 Input video exists: {}", Files.exists(inputVideo));
+            log.error("🔍 Output directory exists: {}", Files.exists(hlsOutputDir));
+            
+            // Try fallback with copy codec (no re-encoding)
+            log.warn("🔄 Trying fallback with copy codec (no re-encoding)...");
+            try {
+                var fallbackBuilder = UrlOutput.toPath(outputPlaylist)
+                        .addArguments("-c", "copy")                     // Copy streams without re-encoding
+                        .addArguments("-start_number", "0")
+                        .addArguments("-hls_time", hlsSegmentTime)
+                        .addArguments("-hls_list_size", "0")
+                        .addArguments("-f", "hls")
+                        .addArguments("-hls_flags", "independent_segments")
+                        .addArguments("-hls_segment_filename", segmentPattern);
+                
+                FFmpeg.atPath(ffmpegDir).addInput(UrlInput.fromPath(inputVideo))
+                        .addOutput(fallbackBuilder)
+                        .execute();
+                
+                long fallbackDuration = System.currentTimeMillis() - startTime;
+                log.info("✅ Fallback HLS conversion completed in {}ms using copy codec", fallbackDuration);
+                return fallbackDuration;
+                
+            } catch (Exception fallbackException) {
+                log.error("💥 Fallback conversion also failed: {}", fallbackException.getMessage());
+                throw new RuntimeException("FFmpeg HLS conversion failed with all methods: " + e.getMessage() + 
+                                         ". Fallback error: " + fallbackException.getMessage(), e);
+            }
+        }
     }
 
     /**
@@ -685,6 +391,255 @@ public class VideoStreamServiceImpl implements VideoStreamService {
             this.operationId = operationId;
             this.fileSizeBytes = fileSizeBytes;
             this.startTimeMs = startTimeMs;
+        }
+    }
+
+    /**
+     * Test S3 connectivity before attempting uploads
+     */
+    private void testS3Connectivity() {
+        try {
+            log.info("🔍 Testing S3 connectivity to bucket: {}", s3BucketName);
+            // Try to list objects in bucket (this will fail if credentials/bucket are wrong)
+            s3Template.listObjects(s3BucketName, "test/");
+            log.info("✅ S3 connectivity test successful");
+        } catch (Exception e) {
+            log.error("❌ S3 connectivity test failed - bucket: {}, error: {}", s3BucketName, e.getMessage());
+            throw new RuntimeException("S3 connectivity failed: " + e.getMessage(), e);
+        }
+    }
+
+
+
+    /**
+     * INSTANT RESPONSE - Fire-and-forget async HLS conversion and upload using Java 21 Virtual Threads
+     * API responds in ~100ms, HLS conversion + upload continues in background Virtual Thread
+     * Target: API response <100ms, HLS processing happens asynchronously
+     * 
+     * Process: Video → FFmpeg HLS Conversion → Upload HLS segments + playlist to S3
+     */
+    public BaseDataRs uploadVideoInstantResponse(MultipartFile file, String question, String intervieweeId, String questionId) {
+        String operationId = "instant-" + java.util.UUID.randomUUID().toString().substring(0, 8);
+        long startTime = System.currentTimeMillis();
+        
+        try {
+            // IMMEDIATE VALIDATION (fast)
+            if (file == null || file.isEmpty()) {
+                throw new RuntimeException("File is Empty/Null");
+            }
+            if (!StringUtils.hasText(question)) {
+                throw new RuntimeException("Question is Empty/Null");
+            }
+            if (!StringUtils.hasText(intervieweeId)) {
+                throw new RuntimeException("Interviewee ID is null or blank");
+            }
+            if (!StringUtils.hasText(questionId)) {
+                throw new RuntimeException("Question ID is null or blank");
+            }
+            
+            log.info("🚀⚡💫 INSTANT RESPONSE upload started: operation={}, size={}MB", 
+                    operationId, file.getSize() / (1024.0 * 1024.0));
+            
+            // FIRE-AND-FORGET: Start async upload in Virtual Thread (non-blocking)
+            CompletableFuture.runAsync(() -> {
+                performAsyncVirtualThreadUpload(file, question, intervieweeId, questionId, operationId);
+            }, videoUploadExecutor);
+            
+            long responseTime = System.currentTimeMillis() - startTime;
+            
+            log.info("✅⚡ INSTANT API RESPONSE in {}ms - upload continuing in Virtual Thread", responseTime);
+            
+            // IMMEDIATE RESPONSE (target: <100ms)
+            java.util.Map<String, Object> data = new java.util.HashMap<>();
+            data.put("uploadMethod", "INSTANT_RESPONSE_VIRTUAL_THREAD");
+            data.put("operationId", operationId);
+            data.put("status", "UPLOADING_IN_BACKGROUND");
+            data.put("responseTimeMs", responseTime);
+            data.put("fileSizeMB", file.getSize() / (1024.0 * 1024.0));
+            data.put("estimatedUploadTimeMs", "500-1000");
+            data.put("virtualThreadsEnabled", true);
+            data.put("asyncUploadStarted", true);
+            data.put("checkStatusUrl", "/api/v1/video/upload-status/" + operationId);
+            
+            String message = String.format("🚀⚡ INSTANT SUCCESS: API responded in %dms, %.1fMB upload started in Virtual Thread", 
+                responseTime, file.getSize() / (1024.0 * 1024.0));
+            
+            return new BaseDataRs(message, data);
+            
+        } catch (Exception e) {
+            long responseTime = System.currentTimeMillis() - startTime;
+            log.error("💥 INSTANT RESPONSE failed in {}ms: {}", responseTime, e.getMessage());
+            return new BaseDataRs("Instant upload initiation failed: " + e.getMessage());
+        }
+    }
+    
+
+
+    /**
+     * Async Virtual Thread upload with HLS conversion (runs in background)
+     */
+    private void performAsyncVirtualThreadUpload(MultipartFile file, String question, String intervieweeId, String questionId, String operationId) {
+        long uploadStartTime = System.currentTimeMillis();
+        Path tempDir = null;
+        
+        try {
+            log.info("🚀🎬 VIRTUAL THREAD HLS conversion and S3 upload started: operation={}", operationId);
+            recordUploadStart(operationId, file.getSize());
+            
+            // Create base S3 directory structure: intervieweeId/questionId/
+            String baseS3Key = String.format("%s/%s", intervieweeId.trim(), questionId.trim());
+            
+            // Create temporary directory for HLS processing
+            tempDir = Files.createTempDirectory("hls-instant-upload-" + operationId);
+            
+            // Save video file temporarily
+            Path tempVideoPath = tempDir.resolve(tmpVidFilename);
+            try (InputStream is = file.getInputStream()) {
+                Files.copy(is, tempVideoPath, StandardCopyOption.REPLACE_EXISTING);
+            }
+            log.debug("📹 Temporary video saved: {}", tempVideoPath);
+            
+            // Create question text file
+            Path questionFile = tempDir.resolve(queFilename);
+            Files.writeString(questionFile, question, StandardOpenOption.CREATE);
+            log.debug("📝 Question file created: {}", questionFile);
+            
+            // Create HLS output directory
+            Path hlsOutputDir = tempDir.resolve(hlsDir);
+            Files.createDirectories(hlsOutputDir);
+            
+            log.info("🎬 Converting video to HLS format using OPTIMIZED processing...");
+            
+            // Execute OPTIMIZED HLS conversion
+            long ffmpegDuration = executeOptimizedHlsConversion(
+                tempVideoPath, 
+                hlsOutputDir.resolve(hlsPlayFilename),
+                hlsOutputDir,
+                hlsOutputDir.resolve(hlsSegPattern).toString()
+            );
+            
+            log.info("✅ HLS conversion completed in {}ms, uploading to S3...", ffmpegDuration);
+            
+            // Upload question text file to S3
+            String questionS3Key = String.format("%s/%s", baseS3Key, queFilename);
+            s3Template.upload(s3BucketName, questionS3Key, Files.newInputStream(questionFile));
+            log.debug("📝 Question uploaded: {}", questionS3Key);
+            
+            // Upload HLS playlist file to S3
+            String playlistS3Key = String.format("%s/%s/%s", baseS3Key, hlsDir, hlsPlayFilename);
+            Path playlistFile = hlsOutputDir.resolve(hlsPlayFilename);
+            s3Template.upload(s3BucketName, playlistS3Key, Files.newInputStream(playlistFile));
+            log.debug("🎵 HLS playlist uploaded: {}", playlistS3Key);
+            
+            // Upload all HLS segment files to S3
+            int segmentCount = 0;
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(hlsOutputDir, "*.ts")) {
+                for (Path segmentFile : stream) {
+                    String segmentS3Key = String.format("%s/%s/%s", baseS3Key, hlsDir, segmentFile.getFileName());
+                    s3Template.upload(s3BucketName, segmentS3Key, Files.newInputStream(segmentFile));
+                    segmentCount++;
+                }
+            }
+            log.info("📺 HLS segments uploaded: {} segments", segmentCount);
+            
+            // Delete temporary video file
+            Files.deleteIfExists(tempVideoPath);
+            
+            long uploadDuration = System.currentTimeMillis() - uploadStartTime;
+            recordUploadCompletion(operationId, true, uploadDuration);
+            
+            double speedMBps = (file.getSize() / (1024.0 * 1024.0)) / (uploadDuration / 1000.0);
+            
+            log.info("✅🎬 VIRTUAL THREAD HLS upload COMPLETED: operation={}, duration={}ms, speed={:.2f}MB/s, segments={}", 
+                     operationId, uploadDuration, speedMBps, segmentCount);
+            
+            // Store upload result for status checking
+            storeUploadResult(operationId, true, uploadDuration, speedMBps, playlistS3Key);
+            
+        } catch (Exception e) {
+            long uploadDuration = System.currentTimeMillis() - uploadStartTime;
+            recordUploadCompletion(operationId, false, uploadDuration);
+            
+            log.error("💥 VIRTUAL THREAD HLS upload FAILED: operation={}, duration={}ms, error={}", 
+                     operationId, uploadDuration, e.getMessage());
+            
+            // Store failure result
+            storeUploadResult(operationId, false, uploadDuration, 0.0, null);
+        } finally {
+            // Clean up temporary directory
+            if (tempDir != null) {
+                try {
+                    deleteDirectoryRecursively(tempDir);
+                    log.debug("🧹 Temporary directory cleaned up: {}", tempDir);
+                } catch (Exception e) {
+                    log.warn("⚠️ Failed to clean up temporary directory {}: {}", tempDir, e.getMessage());
+                }
+            }
+        }
+    }
+    
+    /**
+     * Store upload result for status checking (using ConcurrentHashMap for thread safety)
+     */
+    private final ConcurrentHashMap<String, UploadResult> uploadResults = new ConcurrentHashMap<>();
+    
+    private void storeUploadResult(String operationId, boolean success, long duration, double speedMBps, String s3Key) {
+        UploadResult result = new UploadResult(
+            operationId, success, duration, speedMBps, s3Key, System.currentTimeMillis()
+        );
+        uploadResults.put(operationId, result);
+        
+        // Clean up old results (keep only last 1000)
+        if (uploadResults.size() > 1000) {
+            String oldestKey = uploadResults.keySet().iterator().next();
+            uploadResults.remove(oldestKey);
+        }
+    }
+    
+    /**
+     * Get upload status for async operations
+     */
+    public BaseDataRs getUploadStatus(String operationId) {
+        UploadResult result = uploadResults.get(operationId);
+        
+        if (result == null) {
+            return new BaseDataRs("Upload operation not found: " + operationId);
+        }
+        
+        java.util.Map<String, Object> data = new java.util.HashMap<>();
+        data.put("operationId", operationId);
+        data.put("success", result.success);
+        data.put("uploadDurationMs", result.duration);
+        data.put("uploadSpeedMBps", String.format("%.2f", result.speedMBps));
+        data.put("s3Key", result.s3Key);
+        data.put("completedAt", new java.util.Date(result.completedAt));
+        data.put("virtualThreadProcessing", true);
+        
+        String message = result.success 
+            ? String.format("✅ Upload completed successfully in %dms (%.2f MB/s)", result.duration, result.speedMBps)
+            : String.format("❌ Upload failed after %dms", result.duration);
+            
+        return new BaseDataRs(message, data);
+    }
+    
+    /**
+     * Internal class for storing upload results
+     */
+    private static class UploadResult {
+        final String operationId;
+        final boolean success;
+        final long duration;
+        final double speedMBps;
+        final String s3Key;
+        final long completedAt;
+        
+        UploadResult(String operationId, boolean success, long duration, double speedMBps, String s3Key, long completedAt) {
+            this.operationId = operationId;
+            this.success = success;
+            this.duration = duration;
+            this.speedMBps = speedMBps;
+            this.s3Key = s3Key;
+            this.completedAt = completedAt;
         }
     }
 }

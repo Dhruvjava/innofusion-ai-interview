@@ -23,79 +23,26 @@ public interface VideoStreamService {
     BaseDataRs processVideoStream(MultipartFile file, String question, String intervieweeId, String questionId);
 
     /**
-     * High-performance video upload to S3 optimized for 50MB uploads in <1 second
+     * INSTANT RESPONSE - Fire-and-forget async HLS conversion and upload using Java 21 Virtual Threads
+     * API responds in ~100ms, HLS conversion + upload continues in background Virtual Thread
      * 
-     * Converts video to HLS format and uploads HLS files + question text to S3
-     * Creates consistent cloud directory structure: s3://bucket/intervieweeId/questionId/
-     * Uses same file names as local implementation for consistency
+     * Perfect for user experience: immediate response while heavy work happens asynchronously
+     * Process: Video → FFmpeg HLS Conversion → Upload HLS segments + playlist to S3
      * 
      * @param file The video file to upload and convert to HLS (max 50MB)
      * @param question The interview question text
      * @param intervieweeId The interviewee identifier
-     * @param questionId The question identifier  
-     * @return CompletableFuture with detailed performance metrics and upload result
-     */
-    CompletableFuture<BaseDataRs> uploadVideoToS3(MultipartFile file, String question, String intervieweeId, String questionId);
-
-    /**
-     * Complete interview upload to S3 - uploads both video and question text
-     * 
-     * Creates cloud directory structure matching local storage:
-     * s3://bucket/intervieweeId/questionId/
-     * ├── timestamp_video.mp4 (video file)
-     * └── question.txt (question text)
-     * 
-     * @param file The video file to upload (max 50MB)
-     * @param question The interview question text
-     * @param intervieweeId The interviewee identifier
      * @param questionId The question identifier
-     * @return CompletableFuture with upload results for both video and question
+     * @return BaseDataRs with operation ID and immediate response (target: <100ms)
      */
-    CompletableFuture<BaseDataRs> uploadCompleteInterviewToS3(MultipartFile file, String question, String intervieweeId, String questionId);
+    BaseDataRs uploadVideoInstantResponse(MultipartFile file, String question, String intervieweeId, String questionId);
 
     /**
-     * Legacy method - now delegates to main high-performance implementation
+     * Get upload status for async operations
      * 
-     * @deprecated Use uploadVideoToS3 which now uses Spring Cloud AWS by default
+     * @param operationId The operation ID returned from instant response upload
+     * @return BaseDataRs with upload status and completion details
      */
-    @Deprecated(since = "2.0", forRemoval = false)
-    CompletableFuture<BaseDataRs> uploadVideoUsingSpringCloudAws(MultipartFile file, String intervieweeId, String questionId);
+    BaseDataRs getUploadStatus(String operationId);
 
-    /**
-     * Get performance metrics and system health status
-     * 
-     * @return Performance status including average speed, success rate, and recommendations
-     */
-    BaseDataRs getPerformanceStatus();
-
-    /**
-     * Check if file exists in storage
-     * 
-     * @param intervieweeId The interviewee identifier
-     * @param questionId The question identifier
-     * @param fileName The file name
-     * @return true if file exists, false otherwise
-     */
-    CompletableFuture<Boolean> checkVideoExists(String intervieweeId, String questionId, String fileName);
-
-    /**
-     * Generate signed URL for video access
-     * 
-     * @param intervieweeId The interviewee identifier
-     * @param questionId The question identifier
-     * @param fileName The file name
-     * @param durationHours URL validity in hours
-     * @return Signed URL for video access
-     */
-    CompletableFuture<String> generateVideoUrl(String intervieweeId, String questionId, String fileName, int durationHours);
-
-    /**
-     * Delete video from storage
-     * 
-     * @param intervieweeId The interviewee identifier
-     * @param questionId The question identifier
-     * @param fileName The file name
-     * @return true if deletion successful, false otherwise
-     */
-    CompletableFuture<Boolean> deleteVideo(String intervieweeId, String questionId, String fileName);
 }

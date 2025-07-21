@@ -31,8 +31,8 @@ spring:
   # File Upload Configuration
   servlet:
     multipart:
-      max-file-size: 50MB
-      max-request-size: 50MB
+      max-file-size: 1024MB
+      max-request-size: 1024MB
       enabled: true
 
 # Custom Application Configuration
@@ -52,18 +52,20 @@ innfusion:
       preset: ${FFMPEG_PRESET:ultrafast}
       crf: ${FFMPEG_CRF:28}
       segment-time: ${FFMPEG_SEGMENT_TIME:6}
-      hardware-acceleration: ${FFMPEG_HARDWARE_ACCELERATION:true}
+      hardware-acceleration: ${FFMPEG_HARDWARE_ACCELERATION:false}
 
 # AWS S3 Configuration
 aws:
   s3:
-    bucket-name: ${AWS_S3_BUCKET_NAME:innfusion-interview-videos}
-    region: ${AWS_REGION:us-east-1}
-    access-key: ${AWS_ACCESS_KEY_ID:}
-    secret-key: ${AWS_SECRET_ACCESS_KEY:}
-    endpoint-url: ${AWS_S3_ENDPOINT_URL:}
-    max-upload-size: 52428800 # 50MB in bytes
-    upload-timeout-seconds: 30
+    # CHANGE THIS to your existing S3 bucket name
+    bucket-name: ${AWS_S3_BUCKET_NAME:video-stream-upload}
+#    region: ${AWS_REGION:us-east-1}
+#    access-key: ${AWS_ACCESS_KEY_ID:}
+#    secret-key: ${AWS_SECRET_ACCESS_KEY:}
+#    endpoint-url: ${AWS_S3_ENDPOINT_URL:}
+#    max-upload-size: 52428800 # 50MB in bytes
+#    upload-timeout-seconds: 30
+
 
 # Server Configuration
 server:
@@ -107,4 +109,16 @@ innfusion.video.performance:
     core-size: ${VIDEO_THREAD_POOL_CORE:4}
     max-size: ${VIDEO_THREAD_POOL_MAX:8}
     queue-capacity: ${VIDEO_THREAD_POOL_QUEUE:100}
-    keep-alive-seconds: ${VIDEO_THREAD_POOL_KEEPALIVE:60} 
+    keep-alive-seconds: ${VIDEO_THREAD_POOL_KEEPALIVE:60}
+  
+  # JAVA 21 VIRTUAL THREADS Configuration
+  virtual-threads:
+    enabled: ${VIRTUAL_THREADS_ENABLED:true}
+    
+# JVM Performance Optimizations for Java 21
+java:
+  performance:
+    # Enable Virtual Threads globally
+    virtual-threads: ${JAVA_VIRTUAL_THREADS_ENABLED:true}
+    # GC optimizations for high-throughput
+    gc-optimization: ${JAVA_GC_OPTIMIZATION:true} 
